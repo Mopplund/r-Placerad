@@ -1,11 +1,56 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import io from "socket.io-client";
 
-const API_URL = "http://localhost:3001/api/canva";
+const API_URL = import.meta.env.VITE_API_URL + "/api/canva";
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
+
+const paletteColors = ["#FFFFFF", "#000000", "#FF0000", "#00FF00", "#0000FF"];
 
 export default function Canvas() {
+  const canvasRef = useRef(null);
   const [field, setField] = useState([]);
   const [selectedColor, setSelectedColor] = useState("#FFFFFF");
   const [hoveredPixel, setHoveredPixel] = useState(null);
+  const socketRef = useRef(null);
+
+  const [viewportSize, setViewportSize] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+
+  useEffect(() => {
+    function handleResize() {
+      setViewportSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const canvasDimensions = (() => {
+    if (!field.length) return { width: 600, height: 600 };
+
+    const maxWidth = viewportSize.width * 0.95;
+    const maxHeight = viewportSize.height * 0.85;
+
+    const fieldHeight = field.length;
+    const fieldWidth = field[0].length;
+
+    let pixelSize = Math.min(
+      Math.floor(maxWidth / fieldWidth),
+      Math.floor(maxHeight / fieldHeight)
+    );
+
+    if (pixelSize < 1) pixelSize = 1;
+
+    return {
+      width: pixelSize * fieldWidth,
+      height: pixelSize * fieldHeight,
+      pixelSize,
+    };
+  })();
 
   useEffect(() => {
     async function fetchCanvas() {
@@ -15,140 +60,170 @@ export default function Canvas() {
         const data = await res.json();
         setField(data.field);
       } catch (error) {
-        console.error("Failed to load canvas:", error);
+        console.error("Fetch Error:", error);
       }
     }
     fetchCanvas();
   }, []);
 
-  const handleClick = async (rowIndex, colIndex) => {
-    const newField = field.map((row, r) =>
-      row.map((color, c) =>
-        r === rowIndex && c === colIndex ? selectedColor : color
-      )
-    );
-    setField(newField);
+  useEffect(() => {
+    socketRef.current = io(SOCKET_URL);
+
+    socketRef.current.on("pixel-updated", ({ x, y, color }) => {
+      setField((prev) => {
+        if (!prev.length) return prev;
+
+        const newField = prev.map((row) => row.slice());
+        newField[y][x] = color;
+        return newField;
+      });
+    });
+
+    return () => {
+      socketRef.current.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!field.length) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (let y = 0; y < field.length; y++) {
+      for (let x = 0; x < field[y].length; x++) {
+        ctx.fillStyle = field[y][x];
+        ctx.fillRect(
+          x * canvasDimensions.pixelSize,
+          y * canvasDimensions.pixelSize,
+          canvasDimensions.pixelSize,
+          canvasDimensions.pixelSize
+        );
+      }
+    }
+
+    if (hoveredPixel) {
+      const { x, y } = hoveredPixel;
+      ctx.fillStyle = hexToRgba(selectedColor, 0.4);
+      ctx.fillRect(
+        x * canvasDimensions.pixelSize,
+        y * canvasDimensions.pixelSize,
+        canvasDimensions.pixelSize,
+        canvasDimensions.pixelSize
+      );
+    }
+  }, [field, hoveredPixel, selectedColor, canvasDimensions]);
+
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  async function handleClick(e) {
+    if (!field.length) return;
+
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / canvasDimensions.pixelSize);
+    const y = Math.floor((e.clientY - rect.top) / canvasDimensions.pixelSize);
+
+    if (
+      x < 0 ||
+      y < 0 ||
+      y >= field.length ||
+      x >= field[0].length ||
+      field[y][x] === selectedColor
+    )
+      return;
+
+    setField((prev) => {
+      const newField = prev.map((row) => row.slice());
+      newField[y][x] = selectedColor;
+      return newField;
+    });
 
     try {
-      const res = await fetch(`${API_URL}/pixel`, {
+      await fetch(`${API_URL}/pixel`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          x: colIndex,
-          y: rowIndex,
-          color: selectedColor,
-        }),
+        body: JSON.stringify({ x, y, color: selectedColor }),
       });
-      if (!res.ok) throw new Error("Failed to update pixel");
+      socketRef.current.emit("pixel-update", { x, y, color: selectedColor });
     } catch (error) {
-      console.error("Failed to update pixel:", error);
+      console.error("Update Error:", error);
     }
-  };
-
-  if (!field.length) return <div>Laddar...</div>;
-
-  const fieldHeight = field.length;
-  const fieldWidth = field[0].length;
-
-  const maxContainerWidth = window.innerWidth * 0.7; // 70% for canvas
-  const maxContainerHeight = window.innerHeight * 0.9;
-
-  let containerWidth = maxContainerWidth;
-  let containerHeight = (containerWidth * fieldHeight) / fieldWidth;
-
-  if (containerHeight > maxContainerHeight) {
-    containerHeight = maxContainerHeight;
-    containerWidth = (containerHeight * fieldWidth) / fieldHeight;
   }
 
-  function blendColors(c0, c1, ratio) {
-    const hexToRgb = (hex) =>
-      hex
-        .replace(/^#/, "")
-        .match(/.{2}/g)
-        .map((x) => parseInt(x, 16));
-    const rgbToHex = (r, g, b) =>
-      "#" +
-      [r, g, b]
-        .map((x) => x.toString(16).padStart(2, "0"))
-        .join("")
-        .toUpperCase();
+  function handleMouseMove(e) {
+    if (!field.length) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / canvasDimensions.pixelSize);
+    const y = Math.floor((e.clientY - rect.top) / canvasDimensions.pixelSize);
 
-    const rgb0 = hexToRgb(c0);
-    const rgb1 = hexToRgb(c1);
+    if (
+      x < 0 ||
+      y < 0 ||
+      y >= field.length ||
+      x >= field[0].length ||
+      (hoveredPixel && hoveredPixel.x === x && hoveredPixel.y === y)
+    )
+      return;
 
-    const r = Math.round(rgb0[0] * (1 - ratio) + rgb1[0] * ratio);
-    const g = Math.round(rgb0[1] * (1 - ratio) + rgb1[1] * ratio);
-    const b = Math.round(rgb0[2] * (1 - ratio) + rgb1[2] * ratio);
-
-    return rgbToHex(r, g, b);
+    setHoveredPixel({ x, y });
   }
 
-  const paletteColors = ["#FFFFFF", "#000000", "#FF0000", "#00FF00", "#0000FF"];
+  function handleMouseLeave() {
+    setHoveredPixel(null);
+  }
 
   return (
-    <div className="main-wrapper">
-      <div
-        className="canvas-container"
+    <div
+      style={{
+        display: "flex",
+        gap: 20,
+        alignItems: "flex-start",
+        padding: 10,
+        overflow: "hidden",
+      }}
+    >
+      <canvas
+        ref={canvasRef}
+        width={canvasDimensions.width}
+        height={canvasDimensions.height}
         style={{
-          width: containerWidth,
-          height: containerHeight,
+          border: "1px solid #aaa",
+          imageRendering: "pixelated",
+          cursor: "pointer",
+          width: canvasDimensions.width,
+          height: canvasDimensions.height,
+          backgroundColor: "#ddd",
+          borderRadius: "8px",
+          flexShrink: 0,
         }}
-      >
-        <div
-          className="canvas-grid"
-          style={{
-            display: "grid",
-            gridTemplateColumns: `repeat(${fieldWidth}, 1fr)`,
-            gridTemplateRows: `repeat(${fieldHeight}, 1fr)`,
-            gap: "0",
-            width: "100%",
-            height: "100%",
-            backgroundColor: "#ddd",
-            borderRadius: "8px",
-            overflow: "hidden",
-          }}
-        >
-          {field.map((row, rowIndex) =>
-            row.map((color, colIndex) => {
-              const isHovered =
-                hoveredPixel &&
-                hoveredPixel.row === rowIndex &&
-                hoveredPixel.col === colIndex;
+        onClick={handleClick}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      />
 
-              const displayColor = isHovered
-                ? blendColors(color, selectedColor, 0.3)
-                : color;
-
-              return (
-                <div
-                  key={`${rowIndex}-${colIndex}`}
-                  className="pixel"
-                  onClick={() => handleClick(rowIndex, colIndex)}
-                  onMouseEnter={() =>
-                    setHoveredPixel({ row: rowIndex, col: colIndex })
-                  }
-                  onMouseLeave={() => setHoveredPixel(null)}
-                  style={{ backgroundColor: displayColor }}
-                />
-              );
-            })
-          )}
-        </div>
-      </div>
-
-      <div className="palette">
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {paletteColors.map((color) => (
           <button
             key={color}
+            onClick={() => setSelectedColor(color)}
             style={{
+              width: 40,
+              height: 40,
               backgroundColor: color,
               border:
-                selectedColor === color ? "3px solid #666" : "1px solid #aaa",
+                selectedColor === color ? "3px solid #333" : "1px solid #aaa",
+              borderRadius: 6,
               boxShadow:
-                selectedColor === color ? "0 0 8px rgba(0,0,0,0.4)" : "none",
+                selectedColor === color ? "0 0 8px rgba(0,0,0,0.5)" : "none",
+              cursor: "pointer",
+              transition: "all 0.2s ease",
             }}
-            onClick={() => setSelectedColor(color)}
             aria-label={`Select color ${color}`}
           />
         ))}

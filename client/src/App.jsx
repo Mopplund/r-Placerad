@@ -4,7 +4,7 @@ function App() {
   return (
     <div>
       <Canvas />
-      <h1>R-Placerad</h1>
+      <h3>R-Placerad</h3>
     </div>
   );
 }
