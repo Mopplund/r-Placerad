@@ -1,4 +1,5 @@
 import Canva from "../models/Canva.js";
+import { getSocketIo } from "../socket.js";
 
 export async function getCanva(req, res) {
   try {
@@ -20,11 +21,12 @@ export async function createCanva(req, res) {
       return res.status(400).json({ message: "Canvas already exists" });
     }
 
-    const { field, fieldWidth, fieldHeight } = req.body;
+    const fieldWidth = 200;
+    const fieldHeight = 100;
 
-    if (!field || !fieldWidth || !fieldHeight) {
-      return res.status(400).json({ message: "Missing required fields" });
-    }
+    const field = Array(fieldHeight)
+      .fill(null)
+      .map(() => Array(fieldWidth).fill("#FFFFFF"));
 
     const newCanva = new Canva({ field, fieldWidth, fieldHeight });
     await newCanva.save();
@@ -54,8 +56,13 @@ export async function updatePixel(req, res) {
     }
 
     canva.field[y][x] = color;
-
     await canva.save();
+
+    const io = getSocketIo();
+    if (io) {
+      io.emit("pixel-updated", { x, y, color });
+    }
+
     res.status(200).json(canva);
   } catch (error) {
     console.error("Error updating pixel:", error);
