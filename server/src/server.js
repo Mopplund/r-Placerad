@@ -14,7 +14,7 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://your-frontend.onrender.com",
+  "https://r-placerad-frontend.onrender.com",
 ];
 
 const io = new Server(server, {
