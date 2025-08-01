@@ -4,7 +4,23 @@ import io from "socket.io-client";
 const API_URL = import.meta.env.VITE_API_URL + "/api/canva";
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
 
-const paletteColors = ["#FFFFFF", "#000000", "#FF0000", "#00FF00", "#0000FF"];
+const paletteColors = [
+  "#FF0000",
+  "#FF7F00",
+  "#FFFF00",
+  "#00FF00",
+  "#0000FF",
+  "#4B0082",
+  "#9400D3",
+  "#FF00FF",
+  "#00FFFF",
+  "#FFFFFF",
+  "#000000",
+];
+
+const FIXED_PIXEL_SIZE = 5;
+const FIELD_WIDTH = 200;
+const FIELD_HEIGHT = 100;
 
 export default function Canvas() {
   const canvasRef = useRef(null);
@@ -12,45 +28,19 @@ export default function Canvas() {
   const [selectedColor, setSelectedColor] = useState("#FFFFFF");
   const [hoveredPixel, setHoveredPixel] = useState(null);
   const socketRef = useRef(null);
+  const lastClickTimeRef = useRef(0);
 
-  const [viewportSize, setViewportSize] = useState({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
+  const canvasDimensions = {
+    width: FIELD_WIDTH * FIXED_PIXEL_SIZE,
+    height: FIELD_HEIGHT * FIXED_PIXEL_SIZE,
+    pixelSize: FIXED_PIXEL_SIZE,
+  };
 
-  useEffect(() => {
-    function handleResize() {
-      setViewportSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-    }
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  const canvasDimensions = (() => {
-    if (!field.length) return { width: 600, height: 600 };
-
-    const maxWidth = viewportSize.width * 0.95;
-    const maxHeight = viewportSize.height * 0.85;
-
-    const fieldHeight = field.length;
-    const fieldWidth = field[0].length;
-
-    let pixelSize = Math.min(
-      Math.floor(maxWidth / fieldWidth),
-      Math.floor(maxHeight / fieldHeight)
-    );
-
-    if (pixelSize < 1) pixelSize = 1;
-
-    return {
-      width: pixelSize * fieldWidth,
-      height: pixelSize * fieldHeight,
-      pixelSize,
-    };
-  })();
+  const gap = 10;
+  const totalGapHeight = gap * (paletteColors.length - 1);
+  const maxButtonSize =
+    (canvasDimensions.height - totalGapHeight) / paletteColors.length;
+  const buttonSize = Math.floor(maxButtonSize);
 
   useEffect(() => {
     async function fetchCanvas() {
@@ -72,7 +62,6 @@ export default function Canvas() {
     socketRef.current.on("pixel-updated", ({ x, y, color }) => {
       setField((prev) => {
         if (!prev.length) return prev;
-
         const newField = prev.map((row) => row.slice());
         newField[y][x] = color;
         return newField;
@@ -113,7 +102,7 @@ export default function Canvas() {
         canvasDimensions.pixelSize
       );
     }
-  }, [field, hoveredPixel, selectedColor, canvasDimensions]);
+  }, [field, hoveredPixel, selectedColor, canvasDimensions.pixelSize]);
 
   function hexToRgba(hex, alpha) {
     const r = parseInt(hex.slice(1, 3), 16);
@@ -123,6 +112,10 @@ export default function Canvas() {
   }
 
   async function handleClick(e) {
+    const now = Date.now();
+    if (now - lastClickTimeRef.current < 1000) return;
+    lastClickTimeRef.current = now;
+
     if (!field.length) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
@@ -207,14 +200,23 @@ export default function Canvas() {
         onMouseLeave={handleMouseLeave}
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: gap,
+          height: canvasDimensions.height,
+          overflowY: "auto",
+          flexShrink: 0,
+        }}
+      >
         {paletteColors.map((color) => (
           <button
             key={color}
             onClick={() => setSelectedColor(color)}
             style={{
-              width: 40,
-              height: 40,
+              width: buttonSize,
+              height: buttonSize,
               backgroundColor: color,
               border:
                 selectedColor === color ? "3px solid #333" : "1px solid #aaa",
@@ -223,6 +225,7 @@ export default function Canvas() {
                 selectedColor === color ? "0 0 8px rgba(0,0,0,0.5)" : "none",
               cursor: "pointer",
               transition: "all 0.2s ease",
+              flexShrink: 0,
             }}
             aria-label={`Select color ${color}`}
           />
